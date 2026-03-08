@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+~/.chat_agent/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model weights & checkpoints
+*.safetensors
+*.bin
+*.pt
+*.pth
+step1/qwen_lora_finetuned/
+**/checkpoint-*/
+
+# Embeddings cache
+step2/embeddings_cache/
+
+# Environment variables
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Large dataset files (exceed GitHub's 100MB limit)
+E-commerce dataset/train.txt

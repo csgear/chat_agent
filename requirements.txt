@@ -1,0 +1,12 @@
+torch
+transformers
+datasets
+peft
+modelscope
+safetensors
+numpy
+tqdm
+openai
+rank-bm25
+langchain-huggingface
+mcp
