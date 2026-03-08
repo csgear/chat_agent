@@ -1,12 +1,4 @@
-import os
-import json
-import torch
-from tqdm import tqdm
-
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
 from datasets import Dataset
-#pip install transformers==4.32.1
 from transformers import (
     TrainingArguments,
     Trainer,
@@ -14,11 +6,23 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import os
+import json
+import torch
+from tqdm import tqdm
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 
 # 配置参数
 model_name = "Qwen/Qwen3-1.7B"
 output_dir = "qwen_lora_finetuned"
 max_length = 256  # 根据显存调整
+
+# ── 数据文件配置 ────────────────────────────────────────────────
+TRAIN_FILE = "../E-commerce dataset/dev.txt"
+EVAL_FILE = "../E-commerce dataset/test.txt"
+# ────────────────────────────────────────────────────────────────
 
 # 初始化模型和分词器
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -26,9 +30,12 @@ model = AutoModelForCausalLM.from_pretrained(
     model_name,
     torch_dtype=torch.bfloat16,
     device_map="auto",
-    use_cache=False  # 梯度检查点需要关闭cache
+    use_cache=False,  # 梯度检查点需要关闭cache
 )
 tokenizer.pad_token = tokenizer.eos_token
+
+# 梯度检查点需要在PEFT包装前启用input grad钩子
+model.enable_input_require_grads()
 
 # 定义LoRA配置
 peft_config = LoraConfig(
@@ -45,6 +52,8 @@ model = get_peft_model(model, peft_config)
 model.print_trainable_parameters()
 
 # 数据处理函数
+
+
 def format_conversation(example):
     """带数据校验的对话格式处理"""
     messages = []
@@ -92,7 +101,38 @@ def format_conversation(example):
     return {"text": text, "labels": labels[:max_length]} if text else None
 
 # 加载数据集
+
+
+def load_ecommerce_txt(file_path):
+    """加载 E-commerce .txt 格式: label\tutt1\tutt2\t...\tresponse
+    只保留 label=1 的正样本，将 utterances 映射为 user/assistant 交替对话。"""
+    data = []
+    skipped = 0
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in tqdm(f):
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                skipped += 1
+                continue
+            utterances = [p.replace(" ", "") for p in parts[1:]]  # 去除分词空格
+            # 奇数索引=user，偶数索引(含最后response)=assistant
+            convs = []
+            for i, utt in enumerate(utterances):
+                convs.append({"role": "user" if i % 2 == 0 else "assistant", "content": utt})
+            formatted = format_conversation({"conversations": convs})
+            if formatted and len(formatted["text"]) > 10:
+                data.append(formatted)
+            else:
+                skipped += 1
+    print(f"加载 {len(data)} 条正样本（跳过 {skipped} 条）")
+    return Dataset.from_list(data)
+
+
 def load_dataset(file_path):
+    """根据后缀自动选择加载方式"""
+    if file_path.endswith(".txt"):
+        return load_ecommerce_txt(file_path)
+    # 原 JSONL 格式
     data = []
     error_count = 0
     with open(file_path, "r", encoding="utf-8") as f:
@@ -131,34 +171,42 @@ def load_dataset(file_path):
     print(f"成功加载{len(data)}条有效数据（跳过{error_count}条无效数据）")
     return Dataset.from_list(data)
 
-dataset = load_dataset("../dataset/conversation_dataset.jsonl")
+
+dataset = load_dataset(TRAIN_FILE)
+eval_data = load_dataset(EVAL_FILE)
 
 # 数据集预处理
+
+
 def preprocess_function(examples):
     tokenized = tokenizer(
         examples["text"],
         max_length=max_length,
         truncation=True,
         padding="max_length",
-        return_tensors="pt"
     )
 
     # 对齐labels
-    labels = torch.full(
-        (len(examples["text"]), max_length),
-        -100,
-        dtype=torch.long
-    )
-    for i, lbl in enumerate(examples["labels"]):
-        labels[i, :len(lbl)] = torch.LongTensor(lbl[:max_length])
+    all_labels = []
+    for lbl in examples["labels"]:
+        padded = lbl[:max_length] + [-100] * (max_length - min(len(lbl), max_length))
+        all_labels.append(padded)
 
     return {
         "input_ids": tokenized["input_ids"],
         "attention_mask": tokenized["attention_mask"],
-        "labels": labels
+        "labels": all_labels
     }
 
+
 processed_dataset = dataset.map(
+    preprocess_function,
+    batched=True,
+    batch_size=32,
+    remove_columns=["text", "labels"]
+)
+
+processed_eval = eval_data.map(
     preprocess_function,
     batched=True,
     batch_size=32,
@@ -181,9 +229,9 @@ training_args = TrainingArguments(
     learning_rate=5e-5,
     num_train_epochs=3,
     warmup_steps=10,
+    eval_strategy="epoch",          # 每epoch评估一次，用于比较dev/train效果
     report_to="none",
     output_dir=output_dir,
-    save_safetensors=True,
     dataloader_pin_memory=False,
 )
 
@@ -192,6 +240,7 @@ trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=processed_dataset,
+    eval_dataset=processed_eval,
     data_collator=data_collator,
 )
 
@@ -202,8 +251,5 @@ trainer.train()
 # 训练结束后使用PEFT的保存方法
 trainer.model.save_pretrained(
     output_dir,
-    safe_serialization=True,  # 自动处理共享张量
-    save_embedding_layers=True  # 如果需要保留embedding层参数
+    safe_serialization=True
 )
-
-

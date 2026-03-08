@@ -9,7 +9,7 @@ from transformers import (
     DataCollatorForSeq2Seq
 )
 from peft import LoraConfig, get_peft_model
-from modelscope import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # 配置参数
 model_name = "Qwen/Qwen3-1.7B"

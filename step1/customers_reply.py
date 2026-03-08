@@ -1,6 +1,5 @@
 import torch
-from transformers import AutoTokenizer
-from modelscope import AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
 # 配置参数
